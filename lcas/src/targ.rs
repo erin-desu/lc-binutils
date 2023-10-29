@@ -49,6 +49,7 @@ macro_rules! targ_defs{
 }
 
 targ_defs! {
-    #[cfg(feature = "clever")] arch clever;
-    #[cfg(feature = "clever")] arch w65;
+    #[cfg(feature = "clever")]      arch clever;
+    #[cfg(feature = "w65")]         arch w65;
+    #[cfg(feature = "holey-bytes")] arch holeybytes;
 }

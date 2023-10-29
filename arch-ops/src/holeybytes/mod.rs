@@ -33,6 +33,17 @@ macro_rules! opcodes {
                 ),*
             }
 
+            impl Opcode {
+                pub fn from_mnemonic(mnemonic: &str) -> Option<Self> {
+                    paste::paste! {
+                        Some(match mnemonic.to_ascii_lowercase().as_str() {
+                            $(stringify!([<$mnemonic:lower>]) => Self::[<$mnemonic:camel>]),*,
+                            _ => return None,
+                        })
+                    }
+                }
+            }
+
             impl TryFrom<u8> for Opcode {
                 type Error = ();
 
@@ -56,7 +67,7 @@ invoke_with_def!(opcodes);
 macro_rules! operands {
     ($($name:ident $inner:tt),* $(,)?) => {
         $(
-            #[derive(Clone, Debug, PartialEq, Eq)]
+            #[derive(Clone, Debug, PartialEq, Eq, Hash)]
             #[repr(transparent)]
             pub struct $name $inner;
         )*
@@ -67,7 +78,7 @@ macro_rules! operands {
 macro_rules! define_operands_inner {
     // Raw one, transmutable, memory repr = bytecode repr
     (* $name:ident ($($item:ident),* $(,)?)) => {
-        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
         #[repr(packed)]
         pub struct $name($(pub $item),*);
 
@@ -125,7 +136,7 @@ macro_rules! define_operands {
             impl Copy for Address    {}
             impl Copy for Relative16 {}
             impl Copy for Relative32 {}
-
+ 
             $(super::define_operands_inner!(* $name ($($item),*));)*
         }
 
@@ -145,6 +156,9 @@ define_operands! {
     = OpsRRB  (Register  , Register, u8                  ),
     = OpsRRH  (Register  , Register, u16                 ),
     = OpsRRW  (Register  , Register, u32                 ),
+    = OpsRB   (Register  , u8                            ),
+    = OpsRH   (Register  , u16                           ),
+    = OpsRW   (Register  , u32                           ),
     = OpsRD   (Register  , u64                           ),
     = OpsRRD  (Register  , Register, u64                 ),
     + OpsRRA  (Register  , Register, Address             ),
