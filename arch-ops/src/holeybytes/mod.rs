@@ -1,4 +1,4 @@
-use std::convert::TryFrom;
+use std::{convert::TryFrom, str::FromStr};
 
 pub mod codec;
 
@@ -15,14 +15,14 @@ with_builtin_macros::with_builtin! {
 
 /// Thingee for counting
 macro_rules! ignore_const_one {
-    ($_:ident) => {
+    ($_:tt) => {
         1
     };
 }
 
 /// Create opcode enum from definition
 macro_rules! opcodes {
-    ($($opcode:expr, $mnemonic:ident, $_ty:ident, $doc:literal;)*) => {
+    ($($opcode:expr, $mnemonic:ident, $ty:ident, $doc:literal;)*) => {
         paste::paste! {
             #[derive(Clone, Copy, Debug, PartialEq, Eq)]
             #[repr(u8)]
@@ -34,11 +34,21 @@ macro_rules! opcodes {
             }
 
             impl Opcode {
-                pub fn from_mnemonic(mnemonic: &str) -> Option<Self> {
+                pub fn ops_type(self) -> OpsType {
+                    match self {
+                        $(Self::[<$mnemonic:camel>] => OpsType::[<Ops $ty>]),*
+                    }
+                }
+            }
+
+            impl FromStr for Opcode {
+                type Err = ();
+            
+                fn from_str(s: &str) -> Result<Self, Self::Err> {
                     paste::paste! {
-                        Some(match mnemonic.to_ascii_lowercase().as_str() {
+                        Ok(match s.to_ascii_lowercase().as_str() {
                             $(stringify!([<$mnemonic:lower>]) => Self::[<$mnemonic:camel>]),*,
-                            _ => return None,
+                            _ => return Err(()),
                         })
                     }
                 }
@@ -145,6 +155,11 @@ macro_rules! define_operands {
         #[derive(Clone, Debug, PartialEq, Eq)]
         pub enum Operands {
             $($name($name)),*
+        }
+
+        #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+        pub enum OpsType {
+            $($name),*
         }
     };
 }

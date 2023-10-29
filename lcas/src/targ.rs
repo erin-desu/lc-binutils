@@ -39,7 +39,7 @@ macro_rules! targ_defs{
     {$(#[cfg($cfg:meta)] arch $arch:ident;)*} => {
         $(#[cfg($cfg)] mod $arch;)*
 
-        pub fn get_target_def(arch: Architecture) -> Option<&'static dyn TargetMachine>{
+        pub fn get_target_def(arch: Architecture) -> Option<&'static dyn TargetMachine> {
             match arch.canonical_name(){
                 $(stringify!($arch) => Some($arch :: get_target_def()),)*
                 _ => None,

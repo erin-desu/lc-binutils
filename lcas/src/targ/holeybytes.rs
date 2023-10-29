@@ -1,5 +1,12 @@
-use super::{clever::CleverTargetMachine, TargetMachine};
-use crate::as_state::{float_to_bytes_le, int_to_bytes_le};
+use std::str::FromStr;
+
+use arch_ops::holeybytes::{Instruction, Opcode, Register};
+
+use super::TargetMachine;
+use crate::{
+    as_state::{float_to_bytes_le, int_to_bytes_le, AsState},
+    lex::Token,
+};
 
 #[derive(Default, Clone, Hash, PartialEq, Eq)]
 struct Data {}
@@ -52,12 +59,9 @@ impl TargetMachine for HbTargetMachine {
     }
 
     #[inline]
-    fn assemble_insn(
-        &self,
-        opc: &str,
-        state: &mut crate::as_state::AsState,
-    ) -> std::io::Result<()> {
-        todo!()
+    fn assemble_insn(&self, opc: &str, state: &mut AsState) -> std::io::Result<()> {
+        parse_insn(opc, state);
+        Ok(())
     }
 
     #[inline]
@@ -66,11 +70,7 @@ impl TargetMachine for HbTargetMachine {
     }
 
     #[inline]
-    fn handle_directive(
-        &self,
-        _dir: &str,
-        _state: &mut crate::as_state::AsState,
-    ) -> std::io::Result<()> {
+    fn handle_directive(&self, _dir: &str, _state: &mut AsState) -> std::io::Result<()> {
         unreachable!("There ain't no directives yet.")
     }
 
@@ -86,6 +86,32 @@ impl TargetMachine for HbTargetMachine {
 }
 
 #[inline]
-pub fn get_target_def() -> &'static CleverTargetMachine {
-    &CleverTargetMachine
+pub fn get_target_def() -> &'static HbTargetMachine {
+    &HbTargetMachine
+}
+
+fn parse_insn(opc: &str, state: &mut AsState) -> Option<Instruction> {
+    let mut iter = state.iter();
+
+    let opcode = Opcode::from_str(opc).ok()?;
+    None
+}
+
+trait FromToken {
+    fn from_token(token: Token) -> Option<Self>
+    where
+        Self: Sized;
+}
+
+impl FromToken for Register {
+    fn from_token(token: Token) -> Option<Self>
+    where
+        Self: Sized,
+    {
+        let Token::Identifier(lit) = token else {
+            return None;
+        };
+
+        Some(Self(lit.strip_prefix('r')?.parse::<u8>().ok()?))
+    }
 }
