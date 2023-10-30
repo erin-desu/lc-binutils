@@ -1,4 +1,7 @@
-use std::str::FromStr;
+use std::{
+    convert::{TryFrom, TryInto},
+    str::FromStr,
+};
 
 use arch_ops::holeybytes::{
     Address, Instruction, Opcode, Operands, OpsType, Register, Relative16, Relative32,
@@ -101,20 +104,43 @@ pub fn get_target_def() -> &'static HbTargetMachine {
 }
 
 pub fn extract_ops(opsty: OpsType, iter: &mut impl Iterator<Item = Token>) -> Option<Operands> {
+    macro_rules! ignore_const_one {
+        ($_:tt) => {
+            1
+        };
+    }
+
     macro_rules! generate {
-        ($opsty:expr, $iter:expr, { $($name:ident ($($subst:pat),* $(,)?)),* $(,)? }) => {{
+        (
+            $opsty:expr, $iter:expr, {
+                $($name:ident (
+                    $($subst:pat),* $(,)?
+                )),* $(,)?
+            }
+        ) => {{
             let opsty = $opsty;
             let iter  = $iter;
 
             Some(match opsty {
                 $(OpsType::$name => {
+                    #[allow(unused)]
+                    const OPSN: isize = 0 $( + ignore_const_one!($subst))*;
+                    #[allow(unused)]
+                    let mut counter = 0;
+
                     Operands::$name(
                         holeybytes::$name(
                             $({
                                 #[allow(clippy::let_unit_value)]
                                 let $subst = ();
-                                
-                                FromToken::from_token(iter.next()?)?
+                                let item = FromToken::from_token(iter.next()?)?;
+
+                                counter += 1;
+                                if counter < OPSN
+                                    && !matches!(iter.next()?, Token::Sigil(s) if s == ",")
+                                    { return None; }
+
+                                item
                             }),*
                         )
                     )
@@ -163,19 +189,36 @@ impl FromToken for Register {
 
 impl FromToken for Address {
     fn from_token(token: Token) -> Option<Self> {
-        todo!()
+        match token {
+            Token::Identifier(name) => Some(Address::Symbol { name, disp: 0 }),
+            Token::IntegerLiteral(addr) => Some(Address::Abs(addr)),
+            _ => None,
+        }
+    }
+}
+
+fn from_token_rela<T>(token: Token) -> Option<Address>
+where
+    T: TryFrom<i128> + Into<i64>,
+{
+    match token {
+        Token::Identifier(name) => Some(Address::Symbol { name, disp: 0 }),
+        Token::IntegerLiteral(disp) => Some(Address::Disp(T::try_from(disp as i128).ok()?.into())),
+        _ => None,
     }
 }
 
 impl FromToken for Relative16 {
+    #[inline]
     fn from_token(token: Token) -> Option<Self> {
-        todo!()
+        from_token_rela::<i16>(token).map(Self)
     }
 }
 
 impl FromToken for Relative32 {
+    #[inline]
     fn from_token(token: Token) -> Option<Self> {
-        todo!()
+        from_token_rela::<i32>(token).map(Self)
     }
 }
 
