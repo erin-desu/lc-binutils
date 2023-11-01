@@ -1,18 +1,14 @@
-use std::{
-    convert::{TryFrom, TryInto},
-    str::FromStr,
-};
-
-use arch_ops::holeybytes::{
-    Address, Instruction, Opcode, Operands, OpsType, Register, Relative16, Relative32,
-};
-
 use super::TargetMachine;
 use crate::{
     as_state::{float_to_bytes_le, int_to_bytes_le, AsState},
+    expr,
     lex::Token,
 };
 use arch_ops::holeybytes;
+use arch_ops::holeybytes::{
+    Address, Instruction, Opcode, Operands, OpsType, Register, Relative16, Relative32,
+};
+use std::{convert::TryFrom, fmt::Display, str::FromStr};
 
 #[derive(Default, Clone, Hash, PartialEq, Eq)]
 struct Data {}
@@ -69,9 +65,8 @@ impl TargetMachine for HbTargetMachine {
         let opcode = Opcode::from_str(opc)
             .map_err(|_| std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid opcode"))?;
 
-        let ops = extract_ops(opcode.ops_type(), state.iter()).ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, "Invalid operands")
-        })?;
+        let ops = extract_ops(opcode.ops_type(), state.iter())
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
 
         holeybytes::codec::HbEncoder::new(state.output())
             .write_instruction(Instruction::new_unchecked(opcode, ops))
@@ -103,7 +98,7 @@ pub fn get_target_def() -> &'static HbTargetMachine {
     &HbTargetMachine
 }
 
-pub fn extract_ops(opsty: OpsType, iter: &mut impl Iterator<Item = Token>) -> Option<Operands> {
+pub fn extract_ops(opsty: OpsType, iter: &mut impl Iterator<Item = Token>) -> Result<Operands> {
     macro_rules! ignore_const_one {
         ($_:tt) => {
             1
@@ -121,7 +116,7 @@ pub fn extract_ops(opsty: OpsType, iter: &mut impl Iterator<Item = Token>) -> Op
             let opsty = $opsty;
             let iter  = $iter;
 
-            Some(match opsty {
+            Ok(match opsty {
                 $(OpsType::$name => {
                     #[allow(unused)]
                     const OPSN: isize = 0 $( + ignore_const_one!($subst))*;
@@ -133,12 +128,12 @@ pub fn extract_ops(opsty: OpsType, iter: &mut impl Iterator<Item = Token>) -> Op
                             $({
                                 #[allow(clippy::let_unit_value)]
                                 let $subst = ();
-                                let item = FromToken::from_token(iter.next()?)?;
+                                let item = FromToken::from_token(iter.next().ok_or(Error::NotEnoughTokens)?)?;
 
                                 counter += 1;
                                 if counter < OPSN
-                                    && !matches!(iter.next()?, Token::Sigil(s) if s == ",")
-                                    { return None; }
+                                    && !matches!(iter.next().ok_or(Error::NotEnoughTokens)?, Token::Sigil(s) if s == ",")
+                                    { return Err(Error::TooManyOps); }
 
                                 item
                             }),*
@@ -174,50 +169,59 @@ pub fn extract_ops(opsty: OpsType, iter: &mut impl Iterator<Item = Token>) -> Op
 }
 
 trait FromToken: Sized {
-    fn from_token(token: Token) -> Option<Self>;
+    fn from_token(token: Token) -> Result<Self>;
 }
 
 impl FromToken for Register {
-    fn from_token(token: Token) -> Option<Self> {
+    fn from_token(token: Token) -> Result<Self> {
         if let Token::Identifier(lit) = token {
-            Some(Self(lit.strip_prefix('r')?.parse::<u8>().ok()?))
+            Ok(Self(
+                lit.strip_prefix('r')
+                    .ok_or(Error::ExpectedRegister)?
+                    .parse::<u8>()
+                    .map_err(|_| Error::ExpectedRegister)?,
+            ))
         } else {
-            None
+            Err(Error::UnexpectedToken)
         }
     }
 }
 
 impl FromToken for Address {
-    fn from_token(token: Token) -> Option<Self> {
+    fn from_token(token: Token) -> Result<Self> {
         match token {
-            Token::Identifier(name) => Some(Address::Symbol { name, disp: 0 }),
-            Token::IntegerLiteral(addr) => Some(Address::Abs(addr)),
-            _ => None,
+            Token::Identifier(name) => Ok(Address::Symbol { name, disp: 0 }),
+            Token::IntegerLiteral(addr) => Ok(Address::Abs(addr)),
+            _ => Err(Error::UnexpectedToken),
         }
     }
 }
 
-fn from_token_rela<T>(token: Token) -> Option<Address>
+fn from_token_rela<T>(token: Token) -> Result<Address>
 where
     T: TryFrom<i128> + Into<i64>,
 {
     match token {
-        Token::Identifier(name) => Some(Address::Symbol { name, disp: 0 }),
-        Token::IntegerLiteral(disp) => Some(Address::Disp(T::try_from(disp as i128).ok()?.into())),
-        _ => None,
+        Token::Identifier(name) => Ok(Address::Symbol { name, disp: 0 }),
+        Token::IntegerLiteral(disp) => Ok(Address::Disp(
+            T::try_from(disp as i128)
+                .map_err(|_| Error::IntTooBig)?
+                .into(),
+        )),
+        _ => Err(Error::UnexpectedToken),
     }
 }
 
 impl FromToken for Relative16 {
     #[inline]
-    fn from_token(token: Token) -> Option<Self> {
+    fn from_token(token: Token) -> Result<Self> {
         from_token_rela::<i16>(token).map(Self)
     }
 }
 
 impl FromToken for Relative32 {
     #[inline]
-    fn from_token(token: Token) -> Option<Self> {
+    fn from_token(token: Token) -> Result<Self> {
         from_token_rela::<i32>(token).map(Self)
     }
 }
@@ -225,12 +229,12 @@ impl FromToken for Relative32 {
 macro_rules! from_token_imms {
     ($($ty:ident),* $(,)?) => {
         $(impl FromToken for $ty {
-            fn from_token(token: Token) -> Option<Self> {
+            fn from_token(token: Token) -> Result<Self> {
                 use std::convert::TryFrom;
                 if let Token::IntegerLiteral(lit) = token {
-                    Some($ty::try_from(lit).ok()?)
+                    Ok($ty::try_from(lit).map_err(|_| Error::IntTooBig)?)
                 } else {
-                    None
+                    Err(Error::UnexpectedToken)
                 }
             }
         })*
@@ -238,3 +242,26 @@ macro_rules! from_token_imms {
 }
 
 from_token_imms!(u8, u16, u32, u64);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Error {
+    IntTooBig,
+    UnexpectedToken,
+    ExpectedRegister,
+    TooManyOps,
+    NotEnoughTokens,
+}
+
+impl Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::IntTooBig => "Integer is too big",
+            Self::UnexpectedToken => "Unexpected token",
+            Self::ExpectedRegister => "Expected register",
+            Self::TooManyOps => "Too many operands",
+            Self::NotEnoughTokens => "Not enough tokens",
+        })
+    }
+}
+
+pub type Result<T, E = Error> = std::result::Result<T, E>;
