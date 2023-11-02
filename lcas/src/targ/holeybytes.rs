@@ -1,14 +1,18 @@
-use super::TargetMachine;
-use crate::{
-    as_state::{float_to_bytes_le, int_to_bytes_le, AsState},
-    expr,
-    lex::Token,
+use std::iter::Peekable;
+
+use crate::expr::{self, Expression};
+
+use {
+    super::TargetMachine,
+    crate::{
+        as_state::{float_to_bytes_le, int_to_bytes_le, AsState},
+        lex::Token,
+    },
+    arch_ops::holeybytes::{
+        self, Address, Instruction, Opcode, Operands, OpsType, Register, Relative16, Relative32,
+    },
+    std::{convert::TryFrom, fmt::Display, str::FromStr},
 };
-use arch_ops::holeybytes;
-use arch_ops::holeybytes::{
-    Address, Instruction, Opcode, Operands, OpsType, Register, Relative16, Relative32,
-};
-use std::{convert::TryFrom, fmt::Display, str::FromStr};
 
 #[derive(Default, Clone, Hash, PartialEq, Eq)]
 struct Data {}
@@ -98,7 +102,10 @@ pub fn get_target_def() -> &'static HbTargetMachine {
     &HbTargetMachine
 }
 
-pub fn extract_ops(opsty: OpsType, iter: &mut impl Iterator<Item = Token>) -> Result<Operands> {
+pub fn extract_ops(
+    opsty: OpsType,
+    iter: &mut Peekable<impl Iterator<Item = Token>>,
+) -> Result<Operands> {
     macro_rules! ignore_const_one {
         ($_:tt) => {
             1
@@ -128,7 +135,7 @@ pub fn extract_ops(opsty: OpsType, iter: &mut impl Iterator<Item = Token>) -> Re
                             $({
                                 #[allow(clippy::let_unit_value)]
                                 let $subst = ();
-                                let item = FromToken::from_token(iter.next().ok_or(Error::NotEnoughTokens)?)?;
+                                let item = FromToken::from_token(iter)?;
 
                                 counter += 1;
                                 if counter < OPSN
@@ -168,13 +175,23 @@ pub fn extract_ops(opsty: OpsType, iter: &mut impl Iterator<Item = Token>) -> Re
     })
 }
 
+fn address(iter: &mut Peekable<impl Iterator<Item = Token>>) -> Result<(Register, Address)> {
+    match expr::parse_simple_expr(iter) {
+        Expression::Symbol(name) => Ok((Register(0), Address::Symbol { name, disp: 0 })),
+        Expression::Integer(_) => todo!(),
+        Expression::Binary(_, _, _) => todo!(),
+        Expression::Unary(_, _) => todo!(),
+        Expression::Group(_, _) => todo!(),
+    }
+}
+
 trait FromToken: Sized {
-    fn from_token(token: Token) -> Result<Self>;
+    fn from_token(iter: &mut Peekable<impl Iterator<Item = Token>>) -> Result<Self>;
 }
 
 impl FromToken for Register {
-    fn from_token(token: Token) -> Result<Self> {
-        if let Token::Identifier(lit) = token {
+    fn from_token(iter: &mut Peekable<impl Iterator<Item = Token>>) -> Result<Self> {
+        if let Token::Identifier(lit) = iter.next().ok_or(Error::NotEnoughTokens)? {
             Ok(Self(
                 lit.strip_prefix('r')
                     .ok_or(Error::ExpectedRegister)?
@@ -188,20 +205,17 @@ impl FromToken for Register {
 }
 
 impl FromToken for Address {
-    fn from_token(token: Token) -> Result<Self> {
-        match token {
-            Token::Identifier(name) => Ok(Address::Symbol { name, disp: 0 }),
-            Token::IntegerLiteral(addr) => Ok(Address::Abs(addr)),
-            _ => Err(Error::UnexpectedToken),
-        }
+    fn from_token(iter: &mut Peekable<impl Iterator<Item = Token>>) -> Result<Self> {
+        address(iter)?;
+        Err(Error::UnexpectedToken)
     }
 }
 
-fn from_token_rela<T>(token: Token) -> Result<Address>
+fn from_token_rela<T>(iter: &mut Peekable<impl Iterator<Item = Token>>) -> Result<Address>
 where
     T: TryFrom<i128> + Into<i64>,
 {
-    match token {
+    match iter.next().ok_or(Error::NotEnoughTokens)? {
         Token::Identifier(name) => Ok(Address::Symbol { name, disp: 0 }),
         Token::IntegerLiteral(disp) => Ok(Address::Disp(
             T::try_from(disp as i128)
@@ -214,24 +228,24 @@ where
 
 impl FromToken for Relative16 {
     #[inline]
-    fn from_token(token: Token) -> Result<Self> {
-        from_token_rela::<i16>(token).map(Self)
+    fn from_token(iter: &mut Peekable<impl Iterator<Item = Token>>) -> Result<Self> {
+        from_token_rela::<i16>(iter).map(Self)
     }
 }
 
 impl FromToken for Relative32 {
     #[inline]
-    fn from_token(token: Token) -> Result<Self> {
-        from_token_rela::<i32>(token).map(Self)
+    fn from_token(iter: &mut Peekable<impl Iterator<Item = Token>>) -> Result<Self> {
+        from_token_rela::<i32>(iter).map(Self)
     }
 }
 
 macro_rules! from_token_imms {
     ($($ty:ident),* $(,)?) => {
         $(impl FromToken for $ty {
-            fn from_token(token: Token) -> Result<Self> {
+            fn from_token(iter: &mut Peekable<impl Iterator<Item = Token>>) -> Result<Self> {
                 use std::convert::TryFrom;
-                if let Token::IntegerLiteral(lit) = token {
+                if let Token::IntegerLiteral(lit) = iter.next().ok_or(Error::NotEnoughTokens)?  {
                     Ok($ty::try_from(lit).map_err(|_| Error::IntTooBig)?)
                 } else {
                     Err(Error::UnexpectedToken)
