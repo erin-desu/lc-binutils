@@ -1,17 +1,16 @@
-use std::iter::Peekable;
-
-use crate::expr::{self, Expression};
+use crate::expr::{parse_simple_expr, BinaryOp};
 
 use {
     super::TargetMachine,
     crate::{
         as_state::{float_to_bytes_le, int_to_bytes_le, AsState},
+        expr::{self, Expression},
         lex::Token,
     },
     arch_ops::holeybytes::{
         self, Address, Instruction, Opcode, Operands, OpsType, Register, Relative16, Relative32,
     },
-    std::{convert::TryFrom, fmt::Display, str::FromStr},
+    std::{convert::TryFrom, fmt::Display, iter::Peekable, str::FromStr},
 };
 
 #[derive(Default, Clone, Hash, PartialEq, Eq)]
@@ -176,13 +175,38 @@ pub fn extract_ops(
 }
 
 fn address(iter: &mut Peekable<impl Iterator<Item = Token>>) -> Result<(Register, Address)> {
-    match expr::parse_simple_expr(iter) {
+    match parse_simple_expr(iter) {
         Expression::Symbol(name) => Ok((Register(0), Address::Symbol { name, disp: 0 })),
-        Expression::Integer(_) => todo!(),
-        Expression::Binary(_, _, _) => todo!(),
-        Expression::Unary(_, _) => todo!(),
-        Expression::Group(_, _) => todo!(),
+        Expression::Integer(abs) => Ok((Register(0), Address::Abs(abs))),
+        Expression::Group('[', grp) => gsqb_address(*grp),
+        _ => Err(Error::UnexpectedToken),
     }
+}
+
+/// Group square bracked address
+fn gsqb_address(expr: Expression) -> Result<(Register, Address)> {
+    dbg!(expr);
+    struct ReductionData {
+        register: Option<Register>,
+        pcrel: bool,
+        imm: u128,
+        sym: Option<String>,
+    }
+
+    fn reduce(expr: Expression, data: &mut ReductionData) -> Result<u128> {
+        match expr {
+            Expression::Symbol(sym) if data.sym.is_none() => data.sym = Some(sym),
+            Expression::Symbol(_) => return Err(Error::AddressItemTwiceSet),
+            Expression::Integer(int) => ,
+            Expression::Binary(_, _, _) => todo!(),
+            Expression::Unary(_, _) => todo!(),
+            Expression::Group(_, _) => todo!(),
+        }
+
+        Ok(())
+    }
+
+    todo!()
 }
 
 trait FromToken: Sized {
@@ -264,6 +288,7 @@ pub enum Error {
     ExpectedRegister,
     TooManyOps,
     NotEnoughTokens,
+    AddressItemTwiceSet,
 }
 
 impl Display for Error {
@@ -274,6 +299,7 @@ impl Display for Error {
             Self::ExpectedRegister => "Expected register",
             Self::TooManyOps => "Too many operands",
             Self::NotEnoughTokens => "Not enough tokens",
+            Self::AddressItemTwiceSet => "Item in address expression set twice",
         })
     }
 }
