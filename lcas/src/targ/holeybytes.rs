@@ -1,3 +1,5 @@
+use std::convert::TryInto;
+
 use crate::expr::{parse_simple_expr, BinaryOp};
 
 use {
@@ -105,108 +107,235 @@ pub fn extract_ops(
     opsty: OpsType,
     iter: &mut Peekable<impl Iterator<Item = Token>>,
 ) -> Result<Operands> {
+
+    mod addressing {
+        use super::*;
+        type RegAddr = (Register, Address);
+
+        macro_rules! generate {
+            { $($a_name:ident, $b_name:ident => $a_mapper:expr),* $(,)? } => {
+                $(
+                    #[inline]
+                    pub fn $a_name(p0: Register, r1: RegAddr, r2: u16) -> holeybytes::$a_name {
+                        holeybytes::$a_name(p0, r1.0, $a_mapper(r1.1), r2)
+                    }
+
+                    #[inline]
+                    pub fn $b_name(p0: Register, r1: RegAddr) -> holeybytes::$b_name {
+                        holeybytes::$b_name(p0, r1.0, $a_mapper(r1.1))
+                    }
+                )*
+            };
+        }
+
+        generate! {
+            OpsRRAH, OpsRRA => std::convert::identity,
+            OpsRROH, OpsRRO => holeybytes::Relative32,
+            OpsRRPH, OpsRRP => holeybytes::Relative16,
+        }
+    }
+
     macro_rules! ignore_const_one {
         ($_:tt) => {
             1
         };
     }
 
+    macro_rules! instruction {
+        (
+            $module:ident,
+            $iter:expr,
+            $name:ident
+            ($($subst:pat),* $(,)?)
+            $(,)?
+        ) => {{
+                #[allow(unused)] let iter = $iter;
+                #[allow(unused)] const OPSN: u8 = 0 $(+ ignore_const_one!($subst))*;
+                #[allow(unused)] let mut counter = 0;
+
+                Operands::$name(
+                    $module::$name(
+                        $({
+                            #[allow(clippy::let_unit_value)]
+                            let $subst = ();
+                            let item = FromToken::from_token(iter)?;
+
+                            counter += 1;
+                            if counter < OPSN
+                                && !matches!(iter.next().ok_or(Error::NotEnoughTokens)?, Token::Sigil(s) if s == ",")
+                                { return Err(Error::TooManyOps); }
+
+                            item
+                        }),*
+                    )
+                )
+        }};
+    }
+
     macro_rules! generate {
         (
-            $opsty:expr, $iter:expr, {
-                $($name:ident (
-                    $($subst:pat),* $(,)?
+            $opsty:expr, $iter:expr,
+            simple {
+                $($s_name:ident (
+                    $($s_subst:pat),* $(,)?
+                )),* $(,)?
+            },
+            addressing {
+                $($a_name:ident (
+                    $($a_subst:pat),* $(,)?
                 )),* $(,)?
             }
+            $(,)?
         ) => {{
             let opsty = $opsty;
             let iter  = $iter;
 
             Ok(match opsty {
-                $(OpsType::$name => {
-                    #[allow(unused)]
-                    const OPSN: isize = 0 $( + ignore_const_one!($subst))*;
-                    #[allow(unused)]
-                    let mut counter = 0;
-
-                    Operands::$name(
-                        holeybytes::$name(
-                            $({
-                                #[allow(clippy::let_unit_value)]
-                                let $subst = ();
-                                let item = FromToken::from_token(iter)?;
-
-                                counter += 1;
-                                if counter < OPSN
-                                    && !matches!(iter.next().ok_or(Error::NotEnoughTokens)?, Token::Sigil(s) if s == ",")
-                                    { return Err(Error::TooManyOps); }
-
-                                item
-                            }),*
-                        )
-                    )
-                }),*
+                $(OpsType::$s_name =>
+                    instruction!(holeybytes, iter, $s_name ($($s_subst),*))
+                ),*,
+                $(OpsType::$a_name =>
+                    instruction!(addressing, iter, $a_name ($($a_subst),*))
+                ),*
             })
         }};
     }
 
-    generate!(opsty, iter, {
-        OpsRR   (_, _),
-        OpsRRR  (_, _, _),
-        OpsRRRR (_, _, _, _),
-        OpsRRB  (_, _, _),
-        OpsRRH  (_, _, _),
-        OpsRRW  (_, _, _),
-        OpsRB   (_, _),
-        OpsRH   (_, _),
-        OpsRW   (_, _),
-        OpsRD   (_, _),
-        OpsRRD  (_, _, _),
-        OpsRRA  (_, _, _),
-        OpsRRAH (_, _, _, _),
-        OpsRROH (_, _, _, _),
-        OpsRRPH (_, _, _, _),
-        OpsRRO  (_, _, _),
-        OpsRRP  (_, _, _),
-        OpsO    (_),
-        OpsP    (_),
-        OpsN    ( ),
-    })
+    generate!(opsty, iter,
+        simple {
+            OpsRR   (_, _),
+            OpsRRR  (_, _, _),
+            OpsRRRR (_, _, _, _),
+            OpsRRB  (_, _, _),
+            OpsRRH  (_, _, _),
+            OpsRRW  (_, _, _),
+            OpsRB   (_, _),
+            OpsRH   (_, _),
+            OpsRW   (_, _),
+            OpsRD   (_, _),
+            OpsRRD  (_, _, _),
+            OpsO    (_),
+            OpsP    (_),
+            OpsN    ( ),
+        },
+
+        addressing {
+            OpsRRAH (_, _, _),
+            OpsRROH (_, _, _),
+            OpsRRPH (_, _, _),
+            OpsRRO  (_, _),
+            OpsRRA  (_, _),
+            OpsRRP  (_, _),
+        },
+    )
 }
 
 fn address(iter: &mut Peekable<impl Iterator<Item = Token>>) -> Result<(Register, Address)> {
     match parse_simple_expr(iter) {
         Expression::Symbol(name) => Ok((Register(0), Address::Symbol { name, disp: 0 })),
         Expression::Integer(abs) => Ok((Register(0), Address::Abs(abs))),
-        Expression::Group('[', grp) => gsqb_address(*grp),
+        Expression::Group('[', grp) => {
+            let res = gsqb_address(*grp)?;
+            let disp = |n: u128| (n as i128).try_into().map_err(|_| Error::IntTooBig);
+
+            // > I hate else-if with passion.
+            // — Erin
+            if let Some(name) = res.sym {
+                if res.pcrel {
+                    return Err(Error::AddressItemTwiceSet);
+                }
+
+                Ok((
+                    res.register,
+                    Address::Symbol {
+                        name,
+                        disp: disp(res.imm)?,
+                    },
+                ))
+            } else if res.pcrel {
+                Ok((res.register, Address::Disp(disp(res.imm)?)))
+            } else {
+                Ok((res.register, Address::Abs(res.imm)))
+            }
+        }
         _ => Err(Error::UnexpectedToken),
     }
 }
 
+struct GsQbResultOk {
+    register: Register,
+    sym: Option<String>,
+    pcrel: bool,
+    imm: u128,
+}
+
 /// Group square bracked address
-fn gsqb_address(expr: Expression) -> Result<(Register, Address)> {
-    dbg!(expr);
+fn gsqb_address(expr: Expression) -> Result<GsQbResultOk> {
+    #[derive(Debug, Default)]
     struct ReductionData {
         register: Option<Register>,
-        pcrel: bool,
-        imm: u128,
         sym: Option<String>,
+        pcrel: bool,
     }
 
     fn reduce(expr: Expression, data: &mut ReductionData) -> Result<u128> {
         match expr {
-            Expression::Symbol(sym) if data.sym.is_none() => data.sym = Some(sym),
-            Expression::Symbol(_) => return Err(Error::AddressItemTwiceSet),
-            Expression::Integer(int) => ,
-            Expression::Binary(_, _, _) => todo!(),
+            Expression::Symbol(sym) if sym == "pc" && !data.pcrel => data.pcrel = true,
+            Expression::Symbol(sym) if sym == "pc" => return Err(Error::AddressItemTwiceSet),
+            Expression::Symbol(sym) => {
+                if let Some(n) = sym.strip_prefix('r') {
+                    if let Ok(n) = n.parse() {
+                        if data.register.is_none() {
+                            data.register = Some(Register(n))
+                        } else {
+                            return Err(Error::AddressItemTwiceSet);
+                        }
+                    }
+                } else if data.sym.is_none() {
+                    data.sym = Some(sym)
+                } else {
+                    return Err(Error::AddressItemTwiceSet);
+                }
+            }
+            Expression::Integer(int) => return Ok(int),
+            Expression::Binary(op, lhs, rhs) => {
+                use std::ops;
+                if op != BinaryOp::Add
+                    && (matches!(&*lhs, Expression::Symbol(_))
+                        || matches!(&*rhs, Expression::Symbol(_)))
+                {
+                    return Err(Error::InvalidOps);
+                }
+
+                return Ok(match op {
+                    BinaryOp::Add => ops::Add::add,
+                    BinaryOp::Sub => ops::Sub::sub,
+                    BinaryOp::Mul => ops::Mul::mul,
+                    BinaryOp::Div => ops::Div::div,
+                    BinaryOp::Mod => ops::Rem::rem,
+                    BinaryOp::Lsh => ops::Shl::shl,
+                    BinaryOp::Rsh => ops::Shr::shr,
+                    BinaryOp::And => ops::BitAnd::bitand,
+                    BinaryOp::Or => ops::BitOr::bitor,
+                    BinaryOp::Xor => ops::BitXor::bitxor,
+                    _ => return Err(Error::InvalidOps),
+                }(reduce(*lhs, data)?, reduce(*rhs, data)?));
+            }
             Expression::Unary(_, _) => todo!(),
             Expression::Group(_, _) => todo!(),
         }
 
-        Ok(())
+        Ok(0)
     }
 
-    todo!()
+    let mut data = ReductionData::default();
+    let imm = reduce(expr, &mut data)?;
+    Ok(GsQbResultOk {
+        register: data.register.unwrap_or(Register(0)),
+        sym: data.sym,
+        pcrel: data.pcrel,
+        imm,
+    })
 }
 
 trait FromToken: Sized {
@@ -230,8 +359,19 @@ impl FromToken for Register {
 
 impl FromToken for Address {
     fn from_token(iter: &mut Peekable<impl Iterator<Item = Token>>) -> Result<Self> {
-        address(iter)?;
-        Err(Error::UnexpectedToken)
+        let (reg, addr) = address(iter)?;
+        if reg.0 != 0 {
+            return Err(Error::UnexpectedAddressTy);
+        }
+
+        Ok(addr)
+    }
+}
+
+impl FromToken for (Register, Address) {
+    #[inline(always)]
+    fn from_token(iter: &mut Peekable<impl Iterator<Item = Token>>) -> Result<Self> {
+        address(iter)
     }
 }
 
@@ -289,6 +429,8 @@ pub enum Error {
     TooManyOps,
     NotEnoughTokens,
     AddressItemTwiceSet,
+    InvalidOps,
+    UnexpectedAddressTy,
 }
 
 impl Display for Error {
@@ -300,6 +442,8 @@ impl Display for Error {
             Self::TooManyOps => "Too many operands",
             Self::NotEnoughTokens => "Not enough tokens",
             Self::AddressItemTwiceSet => "Item in address expression set twice",
+            Self::InvalidOps => "Attempted to perform invalid operation",
+            Self::UnexpectedAddressTy => "Unexpected address type for instruction",
         })
     }
 }
