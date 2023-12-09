@@ -107,7 +107,6 @@ pub fn extract_ops(
     opsty: OpsType,
     iter: &mut Peekable<impl Iterator<Item = Token>>,
 ) -> Result<Operands> {
-
     mod addressing {
         use super::*;
         type RegAddr = (Register, Address);
@@ -300,18 +299,21 @@ fn gsqb_address(expr: Expression) -> Result<GsQbResultOk> {
             Expression::Integer(int) => return Ok(int),
             Expression::Binary(op, lhs, rhs) => {
                 use std::ops;
-                if op != BinaryOp::Add
-                    && (matches!(&*lhs, Expression::Symbol(_))
-                        || matches!(&*rhs, Expression::Symbol(_)))
+
+                #[allow(clippy::nonminimal_bool)]
+                if false
+                    || (![BinaryOp::Add, BinaryOp::Sub].contains(&op)
+                        && matches!(&*lhs, Expression::Symbol(_)))
+                    || (op != BinaryOp::Add && matches!(&*rhs, Expression::Symbol(_)))
                 {
                     return Err(Error::InvalidOps);
                 }
 
                 return Ok(match op {
-                    BinaryOp::Add => ops::Add::add,
-                    BinaryOp::Sub => ops::Sub::sub,
-                    BinaryOp::Mul => ops::Mul::mul,
-                    BinaryOp::Div => ops::Div::div,
+                    BinaryOp::Add => u128::wrapping_add,
+                    BinaryOp::Sub => u128::wrapping_sub,
+                    BinaryOp::Mul => u128::wrapping_mul,
+                    BinaryOp::Div => u128::wrapping_div,
                     BinaryOp::Mod => ops::Rem::rem,
                     BinaryOp::Lsh => ops::Shl::shl,
                     BinaryOp::Rsh => ops::Shr::shr,
