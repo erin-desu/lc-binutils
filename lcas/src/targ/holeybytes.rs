@@ -1,17 +1,15 @@
-use std::convert::TryInto;
-
-use crate::expr::{parse_simple_expr, BinaryOp};
-
 use {
     super::TargetMachine,
+    crate::expr::{parse_simple_expr, BinaryOp},
     crate::{
         as_state::{float_to_bytes_le, int_to_bytes_le, AsState},
-        expr::{self, Expression},
+        expr::Expression,
         lex::Token,
     },
     arch_ops::holeybytes::{
         self, Address, Instruction, Opcode, Operands, OpsType, Register, Relative16, Relative32,
     },
+    std::convert::TryInto,
     std::{convert::TryFrom, fmt::Display, iter::Peekable, str::FromStr},
 };
 
@@ -114,11 +112,13 @@ pub fn extract_ops(
         macro_rules! generate {
             { $($a_name:ident, $b_name:ident => $a_mapper:expr),* $(,)? } => {
                 $(
+                    #[allow(non_snake_case)]
                     #[inline]
                     pub fn $a_name(p0: Register, r1: RegAddr, r2: u16) -> holeybytes::$a_name {
                         holeybytes::$a_name(p0, r1.0, $a_mapper(r1.1), r2)
                     }
 
+                    #[allow(non_snake_case)]
                     #[inline]
                     pub fn $b_name(p0: Register, r1: RegAddr) -> holeybytes::$b_name {
                         holeybytes::$b_name(p0, r1.0, $a_mapper(r1.1))

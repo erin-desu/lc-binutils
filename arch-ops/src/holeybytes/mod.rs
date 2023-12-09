@@ -43,7 +43,7 @@ macro_rules! opcodes {
 
             impl FromStr for Opcode {
                 type Err = ();
-            
+
                 fn from_str(s: &str) -> Result<Self, Self::Err> {
                     paste::paste! {
                         Ok(match s.to_ascii_lowercase().as_str() {
@@ -146,7 +146,7 @@ macro_rules! define_operands {
             impl Copy for Address    {}
             impl Copy for Relative16 {}
             impl Copy for Relative32 {}
- 
+
             $(super::define_operands_inner!(* $name ($($item),*));)*
         }
 
